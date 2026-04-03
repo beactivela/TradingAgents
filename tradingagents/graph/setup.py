@@ -1,9 +1,12 @@
 # TradingAgents/graph/setup.py
 
-from typing import Dict, Any
+from typing import Dict, Any, List
+
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Send
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
@@ -38,17 +41,19 @@ class GraphSetup:
         self.conditional_logic = conditional_logic
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals"]
+        self,
+        selected_analysts: List[str] | None = None,
+        *,
+        parallel_analysts: bool = False,
     ):
         """Set up and compile the agent workflow graph.
 
         Args:
-            selected_analysts (list): List of analyst types to include. Options are:
-                - "market": Market analyst
-                - "social": Social media analyst
-                - "news": News analyst
-                - "fundamentals": Fundamentals analyst
+            selected_analysts: Analyst types to include (market, social, news, fundamentals).
+            parallel_analysts: If True, run selected analysts in parallel (LangGraph Send) then join.
         """
+        if selected_analysts is None:
+            selected_analysts = ["market", "social", "news", "fundamentals"]
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
@@ -126,18 +131,34 @@ class GraphSetup:
         workflow.add_node("Conservative Analyst", conservative_analyst)
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
-        # Define edges
-        # Start with the first analyst
-        first_analyst = selected_analysts[0]
-        workflow.add_edge(START, f"{first_analyst.capitalize()} Analyst")
+        def analysts_phase_join(_state: AgentState) -> Dict[str, Any]:
+            """Fan-in after parallel/single analyst tool loops (no-op merge)."""
+            return {}
 
-        # Connect analysts in sequence
+        workflow.add_node("Analyst Phase Join", analysts_phase_join)
+
+        def _fan_out_parallel(state: AgentState):
+            company = state["company_of_interest"]
+            return [
+                Send(
+                    f"{t.capitalize()} Analyst",
+                    {**state, "messages": [HumanMessage(content=company)]},
+                )
+                for t in selected_analysts
+            ]
+
+        # Analyst phase: sequential chain (default) or parallel fan-out/join
+        if parallel_analysts and len(selected_analysts) > 0:
+            workflow.add_conditional_edges(START, _fan_out_parallel)
+        else:
+            first_analyst = selected_analysts[0]
+            workflow.add_edge(START, f"{first_analyst.capitalize()} Analyst")
+
         for i, analyst_type in enumerate(selected_analysts):
             current_analyst = f"{analyst_type.capitalize()} Analyst"
             current_tools = f"tools_{analyst_type}"
             current_clear = f"Msg Clear {analyst_type.capitalize()}"
 
-            # Add conditional edges for current analyst
             workflow.add_conditional_edges(
                 current_analyst,
                 getattr(self.conditional_logic, f"should_continue_{analyst_type}"),
@@ -145,12 +166,16 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
-            if i < len(selected_analysts) - 1:
+            if parallel_analysts:
+                workflow.add_edge(current_clear, "Analyst Phase Join")
+            elif i < len(selected_analysts) - 1:
                 next_analyst = f"{selected_analysts[i+1].capitalize()} Analyst"
                 workflow.add_edge(current_clear, next_analyst)
             else:
                 workflow.add_edge(current_clear, "Bull Researcher")
+
+        if parallel_analysts:
+            workflow.add_edge("Analyst Phase Join", "Bull Researcher")
 
         # Add remaining edges
         workflow.add_conditional_edges(

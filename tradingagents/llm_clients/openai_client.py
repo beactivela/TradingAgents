@@ -74,10 +74,14 @@ class OpenAIClient(BaseLLMClient):
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
 
-        # Native OpenAI: use Responses API for consistent behavior across
-        # all model families. Third-party providers use Chat Completions.
+        # Native OpenAI: default to Responses API (/v1/responses). The Chat Completions path in some
+        # langchain-openai versions can emit bodies OpenAI rejects as "invalid JSON" on tool-heavy graphs.
+        # Set TRADINGAGENTS_OPENAI_USE_RESPONSES_API=0 to force Chat Completions (uses plain ChatOpenAI).
         if self.provider == "openai":
-            llm_kwargs["use_responses_api"] = True
+            use_resp = os.environ.get("TRADINGAGENTS_OPENAI_USE_RESPONSES_API", "1").strip().lower()
+            llm_kwargs["use_responses_api"] = use_resp in ("1", "true", "yes", "on")
+            if not llm_kwargs["use_responses_api"]:
+                return ChatOpenAI(**llm_kwargs)
 
         return NormalizedChatOpenAI(**llm_kwargs)
 

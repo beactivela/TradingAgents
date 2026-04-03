@@ -130,8 +130,9 @@ class TradingAgentsGraph:
         self.ticker = None
         self.log_states_dict = {}  # date to full state dict
 
-        # Set up the graph
-        self.graph = self.graph_setup.setup_graph(selected_analysts)
+        # Set up the graph (parallel analyst phase when TRADINGAGENTS_PARALLEL_ANALYSTS / config)
+        parallel = bool(self.config.get("parallel_analysts", False))
+        self.graph = self.graph_setup.setup_graph(selected_analysts, parallel_analysts=parallel)
 
     def _get_provider_kwargs(self) -> Dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation."""
@@ -152,6 +153,15 @@ class TradingAgentsGraph:
             effort = self.config.get("anthropic_effort")
             if effort:
                 kwargs["effort"] = effort
+
+        # Per-request HTTP timeout (seconds) — prevents hung LLM calls from blocking forever.
+        timeout = self.config.get("llm_timeout_seconds")
+        if timeout is not None:
+            kwargs["timeout"] = float(timeout)
+
+        max_retries = self.config.get("llm_max_retries")
+        if max_retries is not None:
+            kwargs["max_retries"] = int(max_retries)
 
         return kwargs
 
